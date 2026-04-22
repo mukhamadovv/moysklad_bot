@@ -87,24 +87,16 @@ WSGI_APPLICATION = 'moysklad_bot.wsgi.application'
 
 # ─── Database (FIXED & SIMPLIFIED) ─────────────────────
 import dj_database_url
-
-_db_url = _env("DATABASE_URL", "")
-
-if _db_url:
-    DATABASES = {
-        'default': dj_database_url.parse(
-            _db_url,
-            conn_max_age=600,
-            ssl_require=True
-        )
+DATABASES = {
+    'default':{
+        'ENGINE':'django.db.backends.postgresql',
+        'NAME':'railway',
+        'USER':'postgres',
+        'PASSWORD':'uhMLbDsToPCYUNvcvMfgWSkKMirrZDka',
+        'HOST':'postgres.railway.internal',
+        'PORT':'5432'
     }
-else:
-    DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.sqlite3',
-            'NAME': BASE_DIR / 'db.sqlite3',
-        }
-    }
+}
 
 # ─── Static ───────────────────────────────────────────
 STATIC_URL = '/static/'
