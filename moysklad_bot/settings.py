@@ -87,14 +87,15 @@ WSGI_APPLICATION = 'moysklad_bot.wsgi.application'
 
 # ─── Database (FIXED & SIMPLIFIED) ─────────────────────
 import dj_database_url
+
 DATABASES = {
-    'default':{
-        'ENGINE':'django.db.backends.postgresql',
-        'NAME':'railway',
-        'USER':'postgres',
-        'PASSWORD':'uhMLbDsToPCYUNvcvMfgWSkKMirrZDka',
-        'HOST':'postgres.railway.internal',
-        'PORT':'5432'
+    'default': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': 'railway',
+        'USER': 'postgres',
+        'PASSWORD': 'uhMLbDsToPCYUNvcvMfgWSkKMirrZDka',
+        'HOST': 'postgres.railway.internal',
+        'PORT': '5432',
     }
 }
 
