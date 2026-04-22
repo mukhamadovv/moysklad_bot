@@ -1,8 +1,8 @@
 import multiprocessing
 import os
 
-# Workers: 2-4 × CPU cores is a common rule for I/O-bound apps
-workers = multiprocessing.cpu_count() * 2 + 1
+# Cap at 4 workers max — Railway free tier has limited memory
+workers = min(multiprocessing.cpu_count() * 2 + 1, 4)
 
 # Use sync worker (default) — fine for webhook bots
 worker_class = "sync"
