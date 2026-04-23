@@ -532,30 +532,29 @@ def _handle_report_period(customer, text):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _show_client_list_for_action(admin: Customer, next_state: str):
-    """Show list of all MoySklad counterparties as buttons for admin to select."""
-    counterparties = get_all_counterparties(limit=200)
-    if not counterparties:
-        send_message(admin.chat_id, "❌ Не удалось загрузить список клиентов из МойСклад.", reply_markup=get_menu_keyboard(admin))
+    """Show list of registered bot users as buttons for admin to select."""
+    clients = Customer.objects.filter(is_registered=True).order_by("full_name")
+    if not clients.exists():
+        send_message(admin.chat_id, "❌ Нет зарегистрированных пользователей.", reply_markup=get_menu_keyboard(admin))
         return
 
-    # Build name -> moysklad_id mapping and store in state_data so we can look up on selection
-    ms_map = {cp["name"]: cp["id"] for cp in counterparties}
-
-    # For cashout, also attach bonus balance from Django if exists
+    # Build name -> client.id mapping stored in state_data for lookup on selection
+    client_map = {}
     kb = []
-    for cp in counterparties:
-        name = cp["name"]
+    for client in clients:
+        name = client.full_name or client.phone or str(client.chat_id)
+        # Make key unique in case of duplicate names
+        key = f"{name}#{client.id}"
+        client_map[key] = client.id
         if next_state == "awaiting_cashout_client":
-            django_client = Customer.objects.filter(moysklad_id=cp["id"]).first()
-            bonus = django_client.bonus_balance if django_client else 0
-            label = f"{name} | 💎 {bonus}"
+            label = f"{name} | 💎 {client.bonus_balance}"
         else:
             label = name
         kb.append([{"text": label}])
     kb.append([{"text": "⬅️ Назад"}])
 
     admin.state = next_state
-    admin.state_data = {"ms_map": ms_map}
+    admin.state_data = {"client_map": client_map}
     admin.save()
 
     if next_state == "awaiting_cashout_client":
@@ -567,31 +566,25 @@ def _show_client_list_for_action(admin: Customer, next_state: str):
 
 
 def _handle_select_client(admin: Customer, text: str, next_state: str, action_label: str):
-    """Parse client selection from button text and look up via MoySklad ID stored in state_data."""
+    """Parse client selection from button text and look up via client_map stored in state_data."""
     client_name = text.split("|")[0].strip()
 
-    ms_map = admin.state_data.get("ms_map", {})
-    ms_id = ms_map.get(client_name)
+    client_map = admin.state_data.get("client_map", {})
+    # key format is "name#id"
+    client_id = None
+    for key, cid in client_map.items():
+        if key.split("#")[0] == client_name:
+            client_id = cid
+            break
 
-    if not ms_id:
+    if not client_id:
         send_message(admin.chat_id, "❌ Клиент не найден. Выберите из списка.", reply_markup=back_keyboard())
         return
 
-    # Find or create Django Customer record for this MoySklad counterparty
-    client = Customer.objects.filter(moysklad_id=ms_id).first()
+    client = Customer.objects.filter(id=client_id).first()
     if not client:
-        placeholder_chat_id = -(abs(hash(ms_id)) % (10 ** 12))
-        client, _ = Customer.objects.get_or_create(
-            moysklad_id=ms_id,
-            defaults={
-                "chat_id": placeholder_chat_id,
-                "full_name": client_name,
-                "is_registered": False,
-            }
-        )
-        if not client.full_name:
-            client.full_name = client_name
-            client.save()
+        send_message(admin.chat_id, "❌ Клиент не найден.", reply_markup=get_menu_keyboard(admin))
+        return
 
     admin.state = next_state
     admin.state_data = {"client_id": client.id}
