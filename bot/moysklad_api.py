@@ -235,7 +235,7 @@ def calculate_bonus_for_demand(demand_id: str, entity_type: str = "demand"):
     return total_bonus
 
 
-def create_cash_out(counterparty_id: str, amount: float, organization_id: str, expense_item_name: str = "Бонус"):
+def create_cash_out(counterparty_id: str, amount: float, organization_id: str, expense_item_name: str = "Бонус", include_agent: bool = True):
     url = f"{BASE}/entity/expenseitem"
     resp = requests.get(url, headers=_headers(), params={"filter": f"name={expense_item_name}"}, timeout=10)
     expense_item = None
@@ -246,9 +246,11 @@ def create_cash_out(counterparty_id: str, amount: float, organization_id: str, e
 
     data = {
         "organization": {"meta": {"href": f"{BASE}/entity/organization/{organization_id}", "type": "organization", "mediaType": "application/json"}},
-        "agent": {"meta": {"href": f"{BASE}/entity/counterparty/{counterparty_id}", "type": "counterparty", "mediaType": "application/json"}},
         "sum": int(amount * 100),
     }
+    # Only link to counterparty (and affect their balance) when explicitly requested
+    if include_agent and counterparty_id:
+        data["agent"] = {"meta": {"href": f"{BASE}/entity/counterparty/{counterparty_id}", "type": "counterparty", "mediaType": "application/json"}}
     if expense_item:
         data["expenseItem"] = {"meta": expense_item["meta"]}
 

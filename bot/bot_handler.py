@@ -652,11 +652,12 @@ def _handle_cashout_amount(admin: Customer, text: str):
         return
 
     # Create cashout in MoySklad (Расходный ордер with "Бонус" expense item)
+    # include_agent=False so it does NOT affect the counterparty's balance in MoySklad
     ms_result = None
     if client.moysklad_id:
         org = get_organization()
         if org:
-            ms_result = create_cash_out(client.moysklad_id, float(amount), org["id"])
+            ms_result = create_cash_out(client.moysklad_id, float(amount), org["id"], include_agent=False)
 
     # Deduct bonus
     client.bonus_balance -= amount
