@@ -543,7 +543,7 @@ def _show_client_list_for_action(admin: Customer, next_state: str):
 
     # For cashout, also attach bonus balance from Django if exists
     kb = []
-    for cp in counterparties[:50]:
+    for cp in counterparties:
         name = cp["name"]
         if next_state == "awaiting_cashout_client":
             django_client = Customer.objects.filter(moysklad_id=cp["id"]).first()

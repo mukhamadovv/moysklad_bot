@@ -28,7 +28,7 @@ def get_all_counterparties(limit: int = 200):
             "limit": 100,
             "offset": offset,
             "order": "name,asc",
-            "filter": "companyType=individual",
+            # "filter": "companyType=individual",
         }, timeout=10)
         if resp.status_code != 200:
             logger.error("Failed to get counterparties: %s %s", resp.status_code, resp.text[:200])
