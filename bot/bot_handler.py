@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from django.db.models import Sum
@@ -363,9 +363,9 @@ def _import_history_from_moysklad(customer):
         try:
             moment = doc["moment"]
             if moment:
-                doc_date = datetime.strptime(moment[:19], "%Y-%m-%d %H:%M:%S")
+                doc_date = datetime.strptime(moment[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
         except (ValueError, TypeError):
-            doc_date = datetime.now()
+            doc_date = datetime.now(tz=timezone.utc)
 
         tx_type = doc["tx_type"]
         amount = Decimal(str(doc["sum"]))

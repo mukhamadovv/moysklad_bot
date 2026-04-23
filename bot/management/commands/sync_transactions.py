@@ -12,7 +12,7 @@ Usage:
 import logging
 import sys
 from decimal import Decimal
-from datetime import datetime
+from datetime import datetime, timezone
 
 from django.core.management.base import BaseCommand
 
@@ -84,7 +84,7 @@ class Command(BaseCommand):
                 moment = doc.get("moment", "")
                 if moment:
                     try:
-                        doc_date = datetime.strptime(moment[:19], "%Y-%m-%d %H:%M:%S")
+                        doc_date = datetime.strptime(moment[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
                     except ValueError:
                         pass
 
