@@ -10,6 +10,7 @@ Usage:
 """
 
 import logging
+import sys
 from decimal import Decimal
 from datetime import datetime
 
@@ -41,6 +42,8 @@ class Command(BaseCommand):
 
         total_customers = qs.count()
         self.stdout.write(f"Found {total_customers} registered user(s) with MoySklad ID.")
+        self.stdout.flush()
+        sys.stdout.flush()
 
         total_created = 0
         total_skipped = 0
