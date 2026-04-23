@@ -154,30 +154,37 @@ def get_counterparty_documents(cp_id: str):
 
     for entity_type, tx_type in entity_types:
         url = f"{BASE}/entity/{entity_type}"
-        # For retaildemand the counterparty field is 'agent'
         filter_param = f"agent={agent_href}"
-        try:
-            resp = requests.get(url, headers=_headers(), params={
-                "filter": filter_param,
-                "limit": 1000,
-                "order": "moment,asc",
-            }, timeout=30)
-            if resp.status_code == 200:
-                rows = resp.json().get("rows", [])
-                for row in rows:
-                    documents.append({
-                        "entity_type": entity_type,
-                        "tx_type": tx_type,
-                        "id": row.get("id", ""),
-                        "name": row.get("name", ""),
-                        "moment": row.get("moment", ""),
-                        "sum": row.get("sum", 0) / 100,  # kopeks to rubles
-                        "raw": row,
-                    })
-            else:
-                logger.warning("Failed to fetch %s for cp %s: %s", entity_type, cp_id, resp.status_code)
-        except Exception as e:
-            logger.error("Error fetching %s for cp %s: %s", entity_type, cp_id, e)
+        offset = 0
+        while True:
+            try:
+                resp = requests.get(url, headers=_headers(), params={
+                    "filter": filter_param,
+                    "limit": 100,
+                    "offset": offset,
+                    "order": "moment,asc",
+                }, timeout=30)
+                if resp.status_code == 200:
+                    rows = resp.json().get("rows", [])
+                    for row in rows:
+                        documents.append({
+                            "entity_type": entity_type,
+                            "tx_type": tx_type,
+                            "id": row.get("id", ""),
+                            "name": row.get("name", ""),
+                            "moment": row.get("moment", ""),
+                            "sum": row.get("sum", 0) / 100,
+                            "raw": row,
+                        })
+                    if len(rows) < 100:
+                        break  # no more pages
+                    offset += 100
+                else:
+                    logger.warning("Failed to fetch %s for cp %s: %s", entity_type, cp_id, resp.status_code)
+                    break
+            except Exception as e:
+                logger.error("Error fetching %s for cp %s: %s", entity_type, cp_id, e)
+                break
 
     # Sort by moment
     documents.sort(key=lambda d: d.get("moment", ""))
