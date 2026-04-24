@@ -135,6 +135,33 @@ def create_payment_in(counterparty_id: str, amount: float, organization_id: str)
     return None
 
 
+def create_cash_in(counterparty_id: str, amount: float, organization_id: str, description: str = ""):
+    """Create Приходный ордер (Cash In) in MoySklad."""
+    data = {
+        "organization": {"meta": {"href": f"{BASE}/entity/organization/{organization_id}", "type": "organization", "mediaType": "application/json"}},
+        "agent": {"meta": {"href": f"{BASE}/entity/counterparty/{counterparty_id}", "type": "counterparty", "mediaType": "application/json"}},
+        "sum": int(amount * 100),
+    }
+    if description:
+        data["description"] = description
+    resp = requests.post(f"{BASE}/entity/cashin", headers=_headers(), json=data, timeout=10)
+    if resp.status_code in (200, 201):
+        return resp.json()
+    logger.error("Failed to create cashin: %s %s", resp.status_code, resp.text)
+    return None
+
+
+def find_counterparty_by_name(name: str):
+    """Find a counterparty by exact name in MoySklad."""
+    url = f"{BASE}/entity/counterparty"
+    resp = requests.get(url, headers=_headers(), params={"filter": f"name={name}"}, timeout=10)
+    if resp.status_code == 200:
+        rows = resp.json().get("rows", [])
+        if rows:
+            return rows[0]
+    return None
+
+
 def get_counterparty_documents(cp_id: str):
     """Fetch all historical documents for a counterparty from MoySklad.
     Returns list of dicts with type, id, name, moment, sum, etc.
@@ -235,7 +262,7 @@ def calculate_bonus_for_demand(demand_id: str, entity_type: str = "demand"):
     return total_bonus
 
 
-def create_cash_out(counterparty_id: str, amount: float, organization_id: str, expense_item_name: str = "Бонус", include_agent: bool = True):
+def create_cash_out(counterparty_id: str, amount: float, organization_id: str, expense_item_name: str = "Бонус", include_agent: bool = True, description: str = ""):
     url = f"{BASE}/entity/expenseitem"
     resp = requests.get(url, headers=_headers(), params={"filter": f"name={expense_item_name}"}, timeout=10)
     expense_item = None
@@ -253,6 +280,8 @@ def create_cash_out(counterparty_id: str, amount: float, organization_id: str, e
         data["agent"] = {"meta": {"href": f"{BASE}/entity/counterparty/{counterparty_id}", "type": "counterparty", "mediaType": "application/json"}}
     if expense_item:
         data["expenseItem"] = {"meta": expense_item["meta"]}
+    if description:
+        data["description"] = description
 
     resp = requests.post(f"{BASE}/entity/cashout", headers=_headers(), json=data, timeout=10)
     if resp.status_code in (200, 201):
