@@ -262,14 +262,25 @@ def calculate_bonus_for_demand(demand_id: str, entity_type: str = "demand"):
     return total_bonus
 
 
-def create_cash_out(counterparty_id: str, amount: float, organization_id: str, expense_item_name: str = "Бонус", include_agent: bool = True, description: str = ""):
+def _get_or_create_expense_item(name: str):
+    """Find an expenseItem by name, or create it if it doesn't exist."""
     url = f"{BASE}/entity/expenseitem"
-    resp = requests.get(url, headers=_headers(), params={"filter": f"name={expense_item_name}"}, timeout=10)
-    expense_item = None
+    resp = requests.get(url, headers=_headers(), params={"filter": f"name={name}"}, timeout=10)
     if resp.status_code == 200:
         rows = resp.json().get("rows", [])
         if rows:
-            expense_item = rows[0]
+            return rows[0]
+    # Not found — create it
+    resp = requests.post(url, headers=_headers(), json={"name": name}, timeout=10)
+    if resp.status_code in (200, 201):
+        logger.info("Created expenseItem: %s", name)
+        return resp.json()
+    logger.error("Failed to create expenseItem '%s': %s %s", name, resp.status_code, resp.text)
+    return None
+
+
+def create_cash_out(counterparty_id: str, amount: float, organization_id: str, expense_item_name: str = "Бонус", include_agent: bool = True, description: str = ""):
+    expense_item = _get_or_create_expense_item(expense_item_name)
 
     data = {
         "organization": {"meta": {"href": f"{BASE}/entity/organization/{organization_id}", "type": "organization", "mediaType": "application/json"}},

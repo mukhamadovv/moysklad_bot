@@ -18,6 +18,7 @@ venv/
 
 # Django
 db.sqlite3
+db_local.sqlite3
 staticfiles/
 *.log
 
