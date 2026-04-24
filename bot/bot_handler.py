@@ -817,15 +817,23 @@ def _handle_debt_date_range(admin: Customer, text: str):
         bonus_amount=-amount,
         debt_change=-amount,
         description=f"Погашение долга бонусами (админ: {admin.full_name}) | {cashin_comment}",
-        moysklad_entity_id=cashin_result.get("id", "") if cashin_result else "",
+        moysklad_entity_id=cashin_result.get("id", "") if (cashin_result and not cashin_result.get("_error")) else "",
     )
 
     admin.state = "none"
     admin.state_data = {}
     admin.save()
 
-    cashin_status = "✅ Приходный ордер создан" if cashin_result else "⚠️ Не удалось создать Приходный ордер"
-    cashout_status = "✅ Расходный ордер создан" if cashout_result else "⚠️ Не удалось создать Расходный ордер"
+    def _doc_status(result, ok_label, fail_label):
+        if not result:
+            return f"⚠️ {fail_label}: нет ответа от МойСклад"
+        if result.get("_error"):
+            err = result["_error"][:300]
+            return f"❌ {fail_label}: {err}"
+        return f"✅ {ok_label}"
+
+    cashin_status = _doc_status(cashin_result, "Приходный ордер создан", "Ошибка Приходного ордера")
+    cashout_status = _doc_status(cashout_result, "Расходный ордер создан", "Ошибка Расходного ордера")
 
     send_message(
         chat_id,

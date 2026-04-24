@@ -148,7 +148,7 @@ def create_cash_in(counterparty_id: str, amount: float, organization_id: str, de
     if resp.status_code in (200, 201):
         return resp.json()
     logger.error("Failed to create cashin: %s %s", resp.status_code, resp.text)
-    return None
+    return {"_error": resp.text, "_status": resp.status_code}
 
 
 def find_counterparty_by_name(name: str):
@@ -287,7 +287,7 @@ def create_cash_out(counterparty_id: str, amount: float, organization_id: str, e
     if resp.status_code in (200, 201):
         return resp.json()
     logger.error("Failed to create cashout: %s %s", resp.status_code, resp.text)
-    return None
+    return {"_error": resp.text, "_status": resp.status_code}
 
 
 def get_product_groups():
