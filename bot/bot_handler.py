@@ -798,14 +798,12 @@ def _handle_debt_date_range(admin: Customer, text: str):
             description=cashout_comment,
         )
 
-    # Deduct from bonus, update debt
+    # Deduct from bonus, sync debt from MoySklad (cashin already updated it there)
+    client.bonus_balance -= amount
     if client.moysklad_id:
         ms_debt = get_counterparty_balance(client.moysklad_id)
         if ms_debt is not None:
             client.debt_balance = Decimal(str(ms_debt))
-
-    client.bonus_balance -= amount
-    client.debt_balance += amount
     client.save()
 
     # Log transaction
