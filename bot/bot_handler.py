@@ -323,9 +323,6 @@ def _handle_state(customer, text):
     elif state == "awaiting_debt_amount":
         _handle_debt_amount(customer, text)
 
-    elif state == "awaiting_debt_date_range":
-        _handle_debt_date_range(customer, text)
-
 
 def _handle_back(customer):
     customer.state = "none"
@@ -704,7 +701,7 @@ def _handle_cashout_amount(admin: Customer, text: str):
 
 
 def _handle_debt_amount(admin: Customer, text: str):
-    """Step 1: validate the amount, then ask for the bonus collection date range."""
+    """Process debt repayment with bonus: create Приходный ордер + Расходный ордер in MoySklad."""
     chat_id = admin.chat_id
     try:
         amount = Decimal(text.replace(",", ".").replace(" ", ""))
@@ -733,72 +730,30 @@ def _handle_debt_amount(admin: Customer, text: str):
         )
         return
 
-    # Save amount in state_data and ask for date range
-    admin.state = "awaiting_debt_date_range"
-    admin.state_data = {"client_id": client_id, "amount": str(amount)}
-    admin.save()
-
-    send_message(
-        chat_id,
-        f"📅 <b>Период сбора бонусов</b>\n\n"
-        f"Клиент: <b>{client.full_name}</b>\n"
-        f"Сумма: <b>{_fmt(amount)}</b>\n\n"
-        f"Введите период, за который клиент накопил этот бонус:\n"
-        f"Формат: <b>дд.мм.гггг - дд.мм.гггг</b>",
-        reply_markup=back_keyboard(),
-    )
-
-
-def _handle_debt_date_range(admin: Customer, text: str):
-    """Step 2: parse date range, create Приходный ордер + Расходный ордер in MoySklad."""
-    chat_id = admin.chat_id
-
-    # Parse date range
-    try:
-        parts = text.replace("–", "-").split("-")
-        date_from = datetime.strptime(parts[0].strip(), "%d.%m.%Y")
-        date_to = datetime.strptime(parts[1].strip(), "%d.%m.%Y")
-    except (ValueError, IndexError):
-        send_message(chat_id, "❌ Неверный формат. Используйте: дд.мм.гггг - дд.мм.гггг", reply_markup=back_keyboard())
-        return
-
-    client_id = admin.state_data.get("client_id")
-    amount = Decimal(admin.state_data.get("amount", "0"))
-
-    client = Customer.objects.filter(id=client_id).first()
-    if not client:
-        admin.state = "none"
-        admin.state_data = {}
-        admin.save()
-        send_message(chat_id, "❌ Клиент не найден.", reply_markup=get_menu_keyboard(admin))
-        return
-
-    date_from_str = date_from.strftime("%d.%m.%Y")
-    date_to_str = date_to.strftime("%d.%m.%Y")
-    cashin_comment = f"bonus {date_from_str} - {date_to_str}"
-    cashout_comment = f"{client.full_name} бонус"
-
-    org = get_organization()
     cashin_result = None
     cashout_result = None
 
+    org = get_organization("Creative")
+    if not org:
+        org = get_organization()  # fallback to first org if "Creative" not found
+
     if org and client.moysklad_id:
-        # 1. Приходный ордер — agent = client
+        # 1. Приходный ордер — agent = client, comment = "bonus"
         cashin_result = create_cash_in(
             client.moysklad_id, float(amount), org["id"],
-            description=cashin_comment,
+            description="bonus",
         )
 
-        # 2. Расходный ордер — agent = "BONUS magazin"
+        # 2. Расходный ордер — agent = "BONUS magazin", comment = "<client name> бонус"
         bonus_magazin = find_counterparty_by_name("BONUS magazin")
         bonus_magazin_id = bonus_magazin["id"] if bonus_magazin else None
         cashout_result = create_cash_out(
             bonus_magazin_id, float(amount), org["id"],
             include_agent=bool(bonus_magazin_id),
-            description=cashout_comment,
+            description=f"{client.full_name} бонус",
         )
 
-    # Deduct from bonus, sync debt from MoySklad (cashin already updated it there)
+    # Deduct bonus, sync debt from MoySklad
     client.bonus_balance -= amount
     if client.moysklad_id:
         ms_debt = get_counterparty_balance(client.moysklad_id)
@@ -807,7 +762,7 @@ def _handle_debt_date_range(admin: Customer, text: str):
     client.save()
 
     # Log transaction
-    doc_num = cashin_result.get("name", "") if cashin_result else f"DEBTPAY-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    doc_num = cashin_result.get("name", "") if (cashin_result and not cashin_result.get("_error")) else f"DEBTPAY-{datetime.now().strftime('%Y%m%d%H%M%S')}"
     Transaction.objects.create(
         customer=client,
         type="cash_in",
@@ -816,10 +771,13 @@ def _handle_debt_date_range(admin: Customer, text: str):
         amount=amount,
         bonus_amount=-amount,
         debt_change=-amount,
-        description=f"Погашение долга бонусами (админ: {admin.full_name}) | {cashin_comment}",
+        description=f"Погашение долга бонусами (админ: {admin.full_name})",
         moysklad_entity_id=cashin_result.get("id", "") if (cashin_result and not cashin_result.get("_error")) else "",
     )
 
+    # Reset admin state — reload from DB if admin is the same person as client
+    if admin.id == client.id:
+        admin.refresh_from_db()
     admin.state = "none"
     admin.state_data = {}
     admin.save()
@@ -828,8 +786,7 @@ def _handle_debt_date_range(admin: Customer, text: str):
         if not result:
             return f"⚠️ {fail_label}: нет ответа от МойСклад"
         if result.get("_error"):
-            err = result["_error"][:300]
-            return f"❌ {fail_label}: {err}"
+            return f"❌ {fail_label}: {result['_error'][:300]}"
         return f"✅ {ok_label}"
 
     cashin_status = _doc_status(cashin_result, "Приходный ордер создан", "Ошибка Приходного ордера")
@@ -840,19 +797,19 @@ def _handle_debt_date_range(admin: Customer, text: str):
         f"✅ <b>Долг погашен!</b>\n\n"
         f"Клиент: {client.full_name}\n"
         f"Сумма: {_fmt(amount)}\n"
-        f"Период бонусов: {date_from_str} — {date_to_str}\n"
         f"💎 Остаток бонусов: {_fmt(client.bonus_balance)}\n"
         f"💰 Баланс: {_fmt(client.debt_balance)}\n\n"
         f"{cashin_status}\n{cashout_status}",
         reply_markup=get_menu_keyboard(admin),
     )
 
-    # Notify the client
-    send_message(
-        client.chat_id,
-        f"📉 <b>Погашение задолженности</b>\n\n"
-        f"Списано бонусов: <b>{_fmt(amount)}</b>\n"
-        f"Задолженность уменьшена на: <b>{_fmt(amount)}</b>\n"
-        f"💎 Остаток бонусов: <b>{_fmt(client.bonus_balance)}</b>\n"
-        f"💰 Баланс: <b>{_fmt(client.debt_balance)}</b>",
-    )
+    # Notify the client (skip if admin repaid their own debt)
+    if client.chat_id != admin.chat_id:
+        send_message(
+            client.chat_id,
+            f"📉 <b>Погашение задолженности</b>\n\n"
+            f"Списано бонусов: <b>{_fmt(amount)}</b>\n"
+            f"Задолженность уменьшена на: <b>{_fmt(amount)}</b>\n"
+            f"💎 Остаток бонусов: <b>{_fmt(client.bonus_balance)}</b>\n"
+            f"💰 Баланс: <b>{_fmt(client.debt_balance)}</b>",
+        )

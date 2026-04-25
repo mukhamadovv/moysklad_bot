@@ -110,10 +110,11 @@ def get_counterparty_balance(cp_id: str):
     return 0
 
 
-def get_organization():
-    """Get the first organization from MoySklad (needed for creating documents)."""
+def get_organization(name: str = None):
+    """Get organization from MoySklad. If name given, find by name, else return first."""
     url = f"{BASE}/entity/organization"
-    resp = requests.get(url, headers=_headers(), params={"limit": 1}, timeout=10)
+    params = {"filter": f"name={name}", "limit": 1} if name else {"limit": 1}
+    resp = requests.get(url, headers=_headers(), params=params, timeout=10)
     if resp.status_code == 200:
         rows = resp.json().get("rows", [])
         if rows:
