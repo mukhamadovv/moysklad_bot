@@ -93,6 +93,9 @@ class Transaction(models.Model):
     amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     bonus_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     pending_bonus = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    # Sum of (price × qty) for products that actually carry a bonus in this demand.
+    # Used as the denominator when computing proportional bonus transfer on partial payment.
+    bonus_bearing_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     debt_change = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     description = models.TextField(blank=True, default="")
     moysklad_entity_id = models.CharField(max_length=100, blank=True, default="")

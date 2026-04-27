@@ -238,8 +238,20 @@ def get_product(product_href: str):
 
 def calculate_bonus_for_demand(demand_id: str, entity_type: str = "demand"):
     """Calculate bonus based on product 'Бонусная сумма' attribute."""
+    bonus, _ = calculate_bonus_and_bearing_amount(demand_id, entity_type)
+    return bonus
+
+
+def calculate_bonus_and_bearing_amount(demand_id: str, entity_type: str = "demand"):
+    """Return (total_bonus, bonus_bearing_amount) for a demand.
+
+    bonus_bearing_amount is the sum of (price × qty) for ONLY the products
+    that carry a 'Бонусная сумма' attribute > 0. Used as the proportional
+    denominator when a partial payment arrives.
+    """
     positions = get_demand_positions(demand_id, entity_type)
-    total_bonus = 0
+    total_bonus = 0.0
+    bearing_amount = 0.0
     for pos in positions:
         assortment = pos.get("assortment", {})
         product_href = assortment.get("meta", {}).get("href", "")
@@ -254,13 +266,22 @@ def calculate_bonus_for_demand(demand_id: str, entity_type: str = "demand"):
                 try:
                     bonus_per_unit = float(attr.get("value", 0))
                     quantity = float(pos.get("quantity", 0))
-                    total_bonus += bonus_per_unit * quantity
-                    logger.debug("Bonus: product=%s, per_unit=%s, qty=%s", product.get("name"), bonus_per_unit, quantity)
+                    price = float(pos.get("price", 0)) / 100  # stored in kopecks
+                    if bonus_per_unit > 0:
+                        total_bonus += bonus_per_unit * quantity
+                        bearing_amount += price * quantity
+                        logger.debug(
+                            "Bonus: product=%s, per_unit=%s, qty=%s, price=%s",
+                            product.get("name"), bonus_per_unit, quantity, price,
+                        )
                 except (ValueError, TypeError):
                     pass
                 break
-    logger.info("Total bonus for %s/%s: %s", entity_type, demand_id, total_bonus)
-    return total_bonus
+    logger.info(
+        "Bonus/bearing for %s/%s: bonus=%s, bearing=%s",
+        entity_type, demand_id, total_bonus, bearing_amount,
+    )
+    return total_bonus, bearing_amount
 
 
 def _get_or_create_expense_item(name: str):
@@ -330,7 +351,10 @@ def register_webhooks(host: str, secret: str = ""):
         "customerorder", "demand", "retaildemand", "salesreturn",
         "paymentin", "paymentout", "cashin", "cashout",
     ]
-    actions = ["CREATE", "UPDATE"]
+    # DELETE is only meaningful for demand (the only entity type we reverse on delete)
+    entity_actions = {et: ["CREATE", "UPDATE"] for et in entity_types}
+    entity_actions["demand"].append("DELETE")
+
     results = []
 
     # Fetch existing webhooks
@@ -340,7 +364,7 @@ def register_webhooks(host: str, secret: str = ""):
     if resp.status_code == 200:
         existing = resp.json().get("rows", [])
 
-    for et in entity_types:
+    for et, actions in entity_actions.items():
         for action in actions:
             data = {
                 "url": webhook_url,

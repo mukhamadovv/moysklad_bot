@@ -13,8 +13,8 @@ from django.views.decorators.http import require_POST
 from bot.models import Customer, Transaction, ReportSettings
 from bot.telegram_api import send_message
 from bot.moysklad_api import (
-    get_entity, calculate_bonus_for_demand, create_cash_out,
-    get_counterparty_balance, get_demand_positions, get_product,
+    get_entity, calculate_bonus_for_demand, calculate_bonus_and_bearing_amount,
+    create_cash_out, get_counterparty_balance, get_demand_positions, get_product,
 )
 from bot.formatters import format_event
 from bot.bot_handler import handle_update, _fmt
@@ -104,6 +104,38 @@ def _handle_moysklad_event(event: dict):
         logger.warning("No entity_href in event")
         return
 
+    # ── DELETE: entity is already gone — work from local Transaction data ─────
+    if action == "DELETE":
+        entity_id = entity_href.rstrip("/").split("/")[-1]
+        txs = Transaction.objects.filter(moysklad_entity_id=entity_id).select_related("customer")
+        for tx in txs:
+            cust = tx.customer
+            # Reverse any already-credited bonus
+            if tx.bonus_amount > 0:
+                cust.bonus_balance = max(Decimal("0"), cust.bonus_balance - tx.bonus_amount)
+            # Sync debt balance (МойСклад removed the demand, balance changed)
+            ms_bal = get_counterparty_balance(cust.moysklad_id)
+            if ms_bal is not None:
+                cust.debt_balance = Decimal(str(ms_bal))
+            cust.save()
+
+            del_text = (
+                f"🗑 <b>Отгрузка удалена: #{tx.document_number}</b>\n"
+                f"Сумма была: <b>{_fmt(tx.amount)}</b>\n"
+            )
+            if tx.bonus_amount > 0:
+                del_text += f"❌ Списан начисленный бонус: <b>{_fmt(tx.bonus_amount)}</b>\n"
+            if tx.pending_bonus > 0:
+                del_text += f"⏳ Отменён ожидаемый бонус: <b>{_fmt(tx.pending_bonus)}</b>\n"
+            del_text += (
+                f"\n💎 Бонусы: {_fmt(cust.bonus_balance)}\n"
+                f"💰 Баланс: {_fmt(cust.debt_balance)}"
+            )
+            send_message(cust.chat_id, del_text)
+            tx.delete()
+            logger.info("DELETE processed: entity_id=%s, customer=%s", entity_id, cust.chat_id)
+        return
+
     entity = get_entity(entity_href)
     if not entity:
         logger.warning("Could not fetch entity %s", entity_href)
@@ -146,7 +178,9 @@ def _handle_moysklad_event(event: dict):
         # demand: only CREATE (UPDATE fires when payment is linked — skip it)
         # retaildemand: CREATE and UPDATE both fine (Kassa)
         if entity_type == "demand" and action == "CREATE":
-            bonus = Decimal(str(calculate_bonus_for_demand(entity_id, entity_type)))
+            bonus, bearing_amount = calculate_bonus_and_bearing_amount(entity_id, entity_type)
+            bonus = Decimal(str(bonus))
+            bearing_amount = Decimal(str(bearing_amount))
 
             # Sync balance from MoySklad
             ms_bal = get_counterparty_balance(customer.moysklad_id)
@@ -161,6 +195,7 @@ def _handle_moysklad_event(event: dict):
                     "document_date": moment, "amount": total,
                     "bonus_amount": Decimal("0"),
                     "pending_bonus": bonus,
+                    "bonus_bearing_amount": bearing_amount,
                     "debt_change": total,
                     "description": f"Отгрузка {entity_name} (в долг)",
                 }
@@ -173,8 +208,127 @@ def _handle_moysklad_event(event: dict):
             logger.info("Demand(debt) processed: customer=%s, total=%s, pending_bonus=%s", customer.chat_id, total, bonus)
 
         elif entity_type == "demand" and action == "UPDATE":
-            # Skip — demand UPDATE fires when payment is linked, already handled by paymentin
-            logger.info("Demand UPDATE ignored (handled by payment): %s", entity_id)
+            new_bonus, new_bearing = calculate_bonus_and_bearing_amount(entity_id, entity_type)
+            new_bonus = Decimal(str(new_bonus))
+            new_bearing = Decimal(str(new_bearing))
+
+            try:
+                tx = Transaction.objects.get(moysklad_entity_id=entity_id, customer=customer)
+            except Transaction.DoesNotExist:
+                logger.info("Demand UPDATE: no local transaction found for %s, treating as CREATE", entity_id)
+                # Fall back: create it as if it were a CREATE event
+                ms_bal = get_counterparty_balance(customer.moysklad_id)
+                if ms_bal is not None:
+                    customer.debt_balance = Decimal(str(ms_bal))
+                customer.save()
+                Transaction.objects.create(
+                    customer=customer, type="sale",
+                    moysklad_entity_id=entity_id,
+                    document_number=entity_name, document_date=moment,
+                    amount=total, bonus_amount=Decimal("0"),
+                    pending_bonus=new_bonus, bonus_bearing_amount=new_bearing,
+                    debt_change=total,
+                    description=f"Отгрузка {entity_name} (в долг)",
+                )
+                entity["_is_debt"] = True
+                entity["_pending_bonus"] = float(new_bonus)
+                continue
+
+            # ── Demand voided/unposted ("Снять с проведения") ─────────────────
+            # МойСклад fires UPDATE with applicable=false instead of DELETE.
+            # Treat this the same as deletion: reverse bonuses and notify.
+            if entity.get("applicable") is False:
+                if tx.bonus_amount > 0:
+                    customer.bonus_balance = max(Decimal("0"), customer.bonus_balance - tx.bonus_amount)
+                ms_bal = get_counterparty_balance(customer.moysklad_id)
+                if ms_bal is not None:
+                    customer.debt_balance = Decimal(str(ms_bal))
+                customer.save()
+
+                void_text = (
+                    f"🗑 <b>Отгрузка отменена: #{tx.document_number}</b>\n"
+                    f"Сумма была: <b>{_fmt(tx.amount)}</b>\n"
+                )
+                if tx.bonus_amount > 0:
+                    void_text += f"❌ Списан начисленный бонус: <b>{_fmt(tx.bonus_amount)}</b>\n"
+                if tx.pending_bonus > 0:
+                    void_text += f"⏳ Отменён ожидаемый бонус: <b>{_fmt(tx.pending_bonus)}</b>\n"
+                void_text += (
+                    f"\n💎 Бонусы: {_fmt(customer.bonus_balance)}\n"
+                    f"💰 Баланс: {_fmt(customer.debt_balance)}"
+                )
+                send_message(customer.chat_id, void_text)
+                tx.delete()
+                logger.info("Demand VOIDED (applicable=false): entity_id=%s, customer=%s", entity_id, customer.chat_id)
+                continue
+
+            old_total = tx.amount
+            old_bonus_total = tx.bonus_amount + tx.pending_bonus  # original total bonus
+
+            # If nothing meaningful changed (e.g. just a payment-link update), skip
+            if total == old_total and new_bonus == old_bonus_total and entity.get("applicable") is not False:
+                logger.info("Demand UPDATE: no product changes detected, skipping: %s", entity_id)
+                continue
+
+            # Real product/price edit — recompute earned vs pending split
+            if old_bonus_total > 0:
+                earned_ratio = tx.bonus_amount / old_bonus_total
+                new_earned = (new_bonus * earned_ratio).quantize(Decimal("0.01"))
+                new_pending = new_bonus - new_earned
+            else:
+                new_earned = Decimal("0")
+                new_pending = new_bonus
+
+            # Apply bonus_balance delta (only the already-earned portion matters)
+            bonus_delta = new_earned - tx.bonus_amount
+            customer.bonus_balance = max(Decimal("0"), customer.bonus_balance + bonus_delta)
+
+            ms_bal = get_counterparty_balance(customer.moysklad_id)
+            if ms_bal is not None:
+                customer.debt_balance = Decimal(str(ms_bal))
+            customer.save()
+
+            tx.amount = total
+            tx.bonus_amount = new_earned
+            tx.pending_bonus = new_pending
+            tx.bonus_bearing_amount = new_bearing
+            tx.document_number = entity_name
+            tx.document_date = moment
+            tx.debt_change = total
+            tx.description = f"Отгрузка {entity_name} (в долг) [изменено]"
+            tx.save()
+
+            amount_diff = total - old_total
+            bonus_diff = new_bonus - old_bonus_total
+            edit_text = (
+                f"✏️ <b>Отгрузка изменена: #{entity_name}</b>\n"
+                f"Сумма: <b>{_fmt(total)}</b>"
+            )
+            if amount_diff != 0:
+                sign = "+" if amount_diff > 0 else ""
+                edit_text += f" ({sign}{_fmt(amount_diff)})"
+            edit_text += "\n"
+            if new_earned > 0:
+                edit_text += f"✅ Начислено бонусов: <b>{_fmt(new_earned)}</b>"
+                if bonus_delta != 0:
+                    sign = "+" if bonus_delta > 0 else ""
+                    edit_text += f" ({sign}{_fmt(bonus_delta)})"
+                edit_text += "\n"
+            if new_pending > 0:
+                edit_text += f"⏳ Ожидают начисления: <b>{_fmt(new_pending)}</b>"
+                if bonus_diff != 0 and new_earned == 0:
+                    sign = "+" if bonus_diff > 0 else ""
+                    edit_text += f" ({sign}{_fmt(bonus_diff)})"
+                edit_text += "\n"
+            edit_text += (
+                f"\n💎 Бонусы: {_fmt(customer.bonus_balance)}\n"
+                f"💰 Баланс: {_fmt(customer.debt_balance)}"
+            )
+            send_message(customer.chat_id, edit_text)
+            logger.info(
+                "Demand UPDATE processed: customer=%s, total %s→%s, bonus %s→%s",
+                customer.chat_id, old_total, total, old_bonus_total, new_bonus,
+            )
             continue
 
         elif entity_type == "retaildemand" and action in ("CREATE", "UPDATE"):
@@ -284,7 +438,7 @@ def _handle_moysklad_event(event: dict):
                     }
                 )
             else:
-                # Regular payment for a demand — find linked demands via 'operations'
+                # Regular payment — find linked demands via 'operations'
                 linked_demands = []
                 total_bonus = Decimal("0")
                 for op in entity.get("operations", []):
@@ -304,6 +458,57 @@ def _handle_moysklad_event(event: dict):
                             demand_entity = get_entity(op_href)
                             if demand_entity:
                                 linked_demands.append(demand_entity.get("name", op_id))
+
+                # ── No linked operations (direct Приходный ордер) ──────────────
+                # Transfer pending bonuses proportionally based on payment vs
+                # the REMAINING unpaid amount of purchases that carry pending bonuses.
+                if not entity.get("operations") and entity_type == "cashin":
+                    pending_txs = list(customer.transactions.filter(
+                        pending_bonus__gt=0
+                    ).order_by("document_date"))
+
+                    total_pending = sum(tx.pending_bonus for tx in pending_txs)
+
+                    if total_pending > 0:
+                        # Remaining bonus-bearing amount per purchase =
+                        #   bonus_bearing_amount × (pending_bonus / original_pending)
+                        # This uses ONLY the portion of each purchase that belongs to
+                        # bonus-carrying products (ignoring zero-bonus products), so
+                        # partial payments on non-bonus items don't dilute the ratio.
+                        pending_purchases_remaining = Decimal("0")
+                        for tx in pending_txs:
+                            original_pending = tx.bonus_amount + tx.pending_bonus
+                            if original_pending > 0:
+                                remaining_ratio = tx.pending_bonus / original_pending
+                                # Use bonus_bearing_amount if stored; fall back to tx.amount
+                                base = tx.bonus_bearing_amount if tx.bonus_bearing_amount > 0 else tx.amount
+                                pending_purchases_remaining += base * remaining_ratio
+
+                        if pending_purchases_remaining > 0:
+                            ratio = min(total / pending_purchases_remaining, Decimal("1"))
+                            bonus_to_transfer = (ratio * total_pending).quantize(Decimal("0.01"))
+                        else:
+                            bonus_to_transfer = total_pending
+
+                        if bonus_to_transfer > 0:
+                            # Drain pending_bonus from oldest transactions first
+                            remaining = bonus_to_transfer
+                            for tx in pending_txs:
+                                if remaining <= 0:
+                                    break
+                                transfer = min(tx.pending_bonus, remaining)
+                                tx.bonus_amount += transfer
+                                tx.pending_bonus -= transfer
+                                tx.save()
+                                remaining -= transfer
+
+                            total_bonus += bonus_to_transfer
+                            logger.info(
+                                "Proportional bonus transfer: customer=%s, payment=%s, "
+                                "pending_remaining=%s, ratio=%s, bonus=%s",
+                                customer.chat_id, total, pending_purchases_remaining,
+                                ratio, bonus_to_transfer,
+                            )
 
                 customer.bonus_balance += total_bonus
                 ms_bal = get_counterparty_balance(customer.moysklad_id)
