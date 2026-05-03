@@ -110,30 +110,52 @@ def _handle_moysklad_event(event: dict):
         txs = Transaction.objects.filter(moysklad_entity_id=entity_id).select_related("customer")
         for tx in txs:
             cust = tx.customer
-            # Reverse any already-credited bonus
-            if tx.bonus_amount > 0:
-                cust.bonus_balance = max(Decimal("0"), cust.bonus_balance - tx.bonus_amount)
-            # Sync debt balance (МойСклад removed the demand, balance changed)
+
+            # Reverse bonus depending on transaction type
+            if tx.type in ("sale",):
+                # Demand deleted — reverse earned bonus; pending bonus just cancels
+                if tx.bonus_amount > 0:
+                    cust.bonus_balance = max(Decimal("0"), cust.bonus_balance - tx.bonus_amount)
+            elif tx.type in ("payment_in", "cash_in"):
+                # Payment deleted — reverse any bonus that was credited on this payment
+                if tx.bonus_amount > 0:
+                    cust.bonus_balance = max(Decimal("0"), cust.bonus_balance - tx.bonus_amount)
+                # Also restore pending_bonus back on the linked demand transactions
+                # (re-open the debt that this payment had covered proportionally)
+                # We can't perfectly reconstruct which demands — best effort: leave as-is
+                # and let balance sync from МойСклад cover the debt side.
+
+            # Sync balance from МойСклад (the document is already gone there)
             ms_bal = get_counterparty_balance(cust.moysklad_id)
             if ms_bal is not None:
                 cust.debt_balance = Decimal(str(ms_bal))
             cust.save()
 
-            del_text = (
-                f"🗑 <b>Отгрузка удалена: #{tx.document_number}</b>\n"
-                f"Сумма была: <b>{_fmt(tx.amount)}</b>\n"
-            )
-            if tx.bonus_amount > 0:
-                del_text += f"❌ Списан начисленный бонус: <b>{_fmt(tx.bonus_amount)}</b>\n"
-            if tx.pending_bonus > 0:
-                del_text += f"⏳ Отменён ожидаемый бонус: <b>{_fmt(tx.pending_bonus)}</b>\n"
+            # Build notification text based on what was deleted
+            if tx.type in ("payment_in", "cash_in"):
+                del_text = (
+                    f"🗑 <b>Платёж удалён: #{tx.document_number}</b>\n"
+                    f"Сумма была: <b>{_fmt(tx.amount)}</b>\n"
+                )
+                if tx.bonus_amount > 0:
+                    del_text += f"❌ Отменено начисление бонуса: <b>{_fmt(tx.bonus_amount)}</b>\n"
+            else:
+                del_text = (
+                    f"🗑 <b>Отгрузка удалена: #{tx.document_number}</b>\n"
+                    f"Сумма была: <b>{_fmt(tx.amount)}</b>\n"
+                )
+                if tx.bonus_amount > 0:
+                    del_text += f"❌ Списан начисленный бонус: <b>{_fmt(tx.bonus_amount)}</b>\n"
+                if tx.pending_bonus > 0:
+                    del_text += f"⏳ Отменён ожидаемый бонус: <b>{_fmt(tx.pending_bonus)}</b>\n"
+
             del_text += (
                 f"\n💎 Бонусы: {_fmt(cust.bonus_balance)}\n"
                 f"💰 Баланс: {_fmt(cust.debt_balance)}"
             )
             send_message(cust.chat_id, del_text)
             tx.delete()
-            logger.info("DELETE processed: entity_id=%s, customer=%s", entity_id, cust.chat_id)
+            logger.info("DELETE processed: type=%s, entity_id=%s, customer=%s", tx.type, entity_id, cust.chat_id)
         return
 
     entity = get_entity(entity_href)

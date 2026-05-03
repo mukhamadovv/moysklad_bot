@@ -351,9 +351,11 @@ def register_webhooks(host: str, secret: str = ""):
         "customerorder", "demand", "retaildemand", "salesreturn",
         "paymentin", "paymentout", "cashin", "cashout",
     ]
-    # DELETE is only meaningful for demand (the only entity type we reverse on delete)
+    # DELETE is meaningful for demand (reverse debt/bonus) and payments (reverse bonus credit)
     entity_actions = {et: ["CREATE", "UPDATE"] for et in entity_types}
     entity_actions["demand"].append("DELETE")
+    entity_actions["cashin"].append("DELETE")
+    entity_actions["paymentin"].append("DELETE")
 
     results = []
 
