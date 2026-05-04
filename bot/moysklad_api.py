@@ -238,50 +238,68 @@ def get_product(product_href: str):
 
 def calculate_bonus_for_demand(demand_id: str, entity_type: str = "demand"):
     """Calculate bonus based on product 'Бонусная сумма' attribute."""
-    bonus, _ = calculate_bonus_and_bearing_amount(demand_id, entity_type)
+    bonus, _, _ps = calculate_bonus_and_bearing_amount(demand_id, entity_type)
     return bonus
 
 
 def calculate_bonus_and_bearing_amount(demand_id: str, entity_type: str = "demand"):
-    """Return (total_bonus, bonus_bearing_amount) for a demand.
+    """Return (total_bonus, bonus_bearing_amount, product_summary) for a demand.
 
-    bonus_bearing_amount is the sum of (price × qty) for ONLY the products
-    that carry a 'Бонусная сумма' attribute > 0. Used as the proportional
-    denominator when a partial payment arrives.
+    bonus_bearing_amount — sum of (price × qty) for products that carry a
+      'Бонусная сумма' attribute > 0. Used as proportional denominator on
+      partial payment.
+    product_summary — human-readable string of ALL products in the demand,
+      e.g. "Cola 1.5L ×2, Fanta 1.5 ×1". Stored in Transaction.description.
     """
     positions = get_demand_positions(demand_id, entity_type)
-    total_bonus = 0.0
+    total_bonus    = 0.0
     bearing_amount = 0.0
+    product_names  = []
+
     for pos in positions:
-        assortment = pos.get("assortment", {})
+        assortment   = pos.get("assortment", {})
         product_href = assortment.get("meta", {}).get("href", "")
+        quantity     = float(pos.get("quantity", 0))
+
+        # Try to get name from assortment directly, then fetch full product
+        p_name = assortment.get("name", "")
+        product = None
+        if product_href:
+            product = get_product(product_href)
+            if product and not p_name:
+                p_name = product.get("name", "")
+
+        if p_name:
+            qty_str = f"×{int(quantity)}" if quantity == int(quantity) else f"×{quantity}"
+            product_names.append(f"{p_name} {qty_str}")
+
         if not product_href:
             continue
-        product = get_product(product_href)
-        if not product:
-            continue
-        attributes = product.get("attributes", [])
-        for attr in attributes:
-            if attr.get("name") == "Бонусная сумма":
-                try:
-                    bonus_per_unit = float(attr.get("value", 0))
-                    quantity = float(pos.get("quantity", 0))
-                    price = float(pos.get("price", 0)) / 100  # stored in kopecks
-                    if bonus_per_unit > 0:
-                        total_bonus += bonus_per_unit * quantity
-                        bearing_amount += price * quantity
-                        logger.debug(
-                            "Bonus: product=%s, per_unit=%s, qty=%s, price=%s",
-                            product.get("name"), bonus_per_unit, quantity, price,
-                        )
-                except (ValueError, TypeError):
-                    pass
-                break
+
+        # Calculate bonus only for products that carry 'Бонусная сумма'
+        if product:
+            for attr in product.get("attributes", []):
+                if attr.get("name") == "Бонусная сумма":
+                    try:
+                        bonus_per_unit = float(attr.get("value", 0))
+                        price = float(pos.get("price", 0)) / 100  # kopecks → units
+                        if bonus_per_unit > 0:
+                            total_bonus    += bonus_per_unit * quantity
+                            bearing_amount += price * quantity
+                            logger.debug(
+                                "Bonus: product=%s, per_unit=%s, qty=%s, price=%s",
+                                p_name, bonus_per_unit, quantity, price,
+                            )
+                    except (ValueError, TypeError):
+                        pass
+                    break
+
+    product_summary = ", ".join(product_names) if product_names else ""
     logger.info(
-        "Bonus/bearing for %s/%s: bonus=%s, bearing=%s",
-        entity_type, demand_id, total_bonus, bearing_amount,
+        "Bonus/bearing for %s/%s: bonus=%s, bearing=%s, products=%s",
+        entity_type, demand_id, total_bonus, bearing_amount, product_summary,
     )
-    return total_bonus, bearing_amount
+    return total_bonus, bearing_amount, product_summary
 
 
 def _get_or_create_expense_item(name: str):

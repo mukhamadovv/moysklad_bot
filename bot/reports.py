@@ -410,12 +410,15 @@ def generate_admin_report(date_from: datetime, date_to: datetime) -> bytes:
             stripe = local_idx % 2 == 0
             fill   = _stripe_fill if stripe else None
 
-            # Strip leading "Отгрузка ОТ-ХХХХ (в долг)" prefix, keep products part
+            # Description format: "Отгрузка ОТ-ХХХХ: Cola ×2, Fanta ×1"
+            # Show only the products part (after ": ").
+            # Fallback for old records that have no products in description.
             desc = tx.description or ""
             if ": " in desc:
                 desc = desc.split(": ", 1)[1]
-            elif "(в долг)" in desc or "[изменено]" in desc:
-                desc = tx.document_number
+            else:
+                # Old format — no product info stored, show document number
+                desc = tx.document_number or desc
 
             sub_amount += tx.amount
             sub_earned += tx.bonus_amount

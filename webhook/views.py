@@ -200,7 +200,7 @@ def _handle_moysklad_event(event: dict):
         # demand: only CREATE (UPDATE fires when payment is linked — skip it)
         # retaildemand: CREATE and UPDATE both fine (Kassa)
         if entity_type == "demand" and action == "CREATE":
-            bonus, bearing_amount = calculate_bonus_and_bearing_amount(entity_id, entity_type)
+            bonus, bearing_amount, product_summary = calculate_bonus_and_bearing_amount(entity_id, entity_type)
             bonus = Decimal(str(bonus))
             bearing_amount = Decimal(str(bearing_amount))
 
@@ -210,6 +210,10 @@ def _handle_moysklad_event(event: dict):
                 customer.debt_balance = Decimal(str(ms_bal))
             customer.save()
 
+            description = (
+                f"Отгрузка {entity_name}: {product_summary}"
+                if product_summary else f"Отгрузка {entity_name}"
+            )
             Transaction.objects.update_or_create(
                 moysklad_entity_id=entity_id, customer=customer,
                 defaults={
@@ -219,7 +223,7 @@ def _handle_moysklad_event(event: dict):
                     "pending_bonus": bonus,
                     "bonus_bearing_amount": bearing_amount,
                     "debt_change": total,
-                    "description": f"Отгрузка {entity_name} (в долг)",
+                    "description": description,
                 }
             )
 
@@ -230,7 +234,7 @@ def _handle_moysklad_event(event: dict):
             logger.info("Demand(debt) processed: customer=%s, total=%s, pending_bonus=%s", customer.chat_id, total, bonus)
 
         elif entity_type == "demand" and action == "UPDATE":
-            new_bonus, new_bearing = calculate_bonus_and_bearing_amount(entity_id, entity_type)
+            new_bonus, new_bearing, new_product_summary = calculate_bonus_and_bearing_amount(entity_id, entity_type)
             new_bonus = Decimal(str(new_bonus))
             new_bearing = Decimal(str(new_bearing))
 
@@ -238,11 +242,14 @@ def _handle_moysklad_event(event: dict):
                 tx = Transaction.objects.get(moysklad_entity_id=entity_id, customer=customer)
             except Transaction.DoesNotExist:
                 logger.info("Demand UPDATE: no local transaction found for %s, treating as CREATE", entity_id)
-                # Fall back: create it as if it were a CREATE event
                 ms_bal = get_counterparty_balance(customer.moysklad_id)
                 if ms_bal is not None:
                     customer.debt_balance = Decimal(str(ms_bal))
                 customer.save()
+                description = (
+                    f"Отгрузка {entity_name}: {new_product_summary}"
+                    if new_product_summary else f"Отгрузка {entity_name}"
+                )
                 Transaction.objects.create(
                     customer=customer, type="sale",
                     moysklad_entity_id=entity_id,
@@ -250,7 +257,7 @@ def _handle_moysklad_event(event: dict):
                     amount=total, bonus_amount=Decimal("0"),
                     pending_bonus=new_bonus, bonus_bearing_amount=new_bearing,
                     debt_change=total,
-                    description=f"Отгрузка {entity_name} (в долг)",
+                    description=description,
                 )
                 entity["_is_debt"] = True
                 entity["_pending_bonus"] = float(new_bonus)
@@ -317,7 +324,10 @@ def _handle_moysklad_event(event: dict):
             tx.document_number = entity_name
             tx.document_date = moment
             tx.debt_change = total
-            tx.description = f"Отгрузка {entity_name} (в долг) [изменено]"
+            tx.description = (
+                f"Отгрузка {entity_name}: {new_product_summary}"
+                if new_product_summary else f"Отгрузка {entity_name} [изменено]"
+            )
             tx.save()
 
             amount_diff = total - old_total
