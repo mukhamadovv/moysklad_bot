@@ -17,7 +17,10 @@ from datetime import datetime, timezone
 from django.core.management.base import BaseCommand
 
 from bot.models import Customer, Transaction
-from bot.moysklad_api import get_counterparty_documents, get_counterparty_balance
+from bot.moysklad_api import (
+    get_counterparty_documents, get_counterparty_balance,
+    get_demand_positions, get_product,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +95,7 @@ class Command(BaseCommand):
                 amount = Decimal(str(doc.get("sum", 0)))
                 entity_type = doc.get("entity_type", "")
 
-                # Human-readable description
+                # Human-readable description with product names for sales
                 type_labels = {
                     "demand":        "Отгрузка",
                     "retaildemand":  "Розничная продажа",
@@ -103,6 +106,28 @@ class Command(BaseCommand):
                     "cashout":       "Расходный ордер",
                 }
                 description = type_labels.get(entity_type, entity_type)
+
+                if entity_type in ("demand", "retaildemand", "salesreturn") and ms_id:
+                    try:
+                        positions = get_demand_positions(ms_id, entity_type)
+                        product_names = []
+                        for pos in positions:
+                            assortment = pos.get("assortment", {})
+                            p_name = assortment.get("name", "")
+                            if not p_name:
+                                p_href = assortment.get("meta", {}).get("href", "")
+                                if p_href:
+                                    prod = get_product(p_href)
+                                    if prod:
+                                        p_name = prod.get("name", "")
+                            qty = float(pos.get("quantity", 0))
+                            if p_name:
+                                qty_str = f"×{int(qty)}" if qty == int(qty) else f"×{qty}"
+                                product_names.append(f"{p_name} {qty_str}")
+                        if product_names:
+                            description += ": " + ", ".join(product_names)
+                    except Exception as e:
+                        logger.warning("Could not fetch positions for %s/%s: %s", entity_type, ms_id, e)
 
                 Transaction.objects.create(
                     customer=customer,

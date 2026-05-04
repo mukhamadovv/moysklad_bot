@@ -6,6 +6,7 @@ from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 from openpyxl.utils import get_column_letter
 
 from bot.models import Customer, Transaction
+from bot.moysklad_api import get_demand_positions, get_product
 
 
 # ── Styles ────────────────────────────────────────────────────────────────────
@@ -92,6 +93,59 @@ def _fmt(value):
     decimal_part = f"{v - integer_part:.2f}"[2:]
     s = f"{integer_part:,}".replace(",", " ")
     return f"{sign}{s},{decimal_part}"
+
+
+# Cache: moysklad_entity_id → product summary string (avoids duplicate API calls)
+_product_cache: dict[str, str] = {}
+
+
+def _get_product_summary(tx: "Transaction") -> str:
+    """Return a product name string for a sale transaction.
+
+    Priority:
+    1. Already encoded in description after ': '  (new records)
+    2. Cached from a previous call for the same moysklad_entity_id
+    3. Live fetch from МойСклад positions API  (old/legacy records)
+    """
+    desc = tx.description or ""
+
+    # New format: "Отгрузка ОТ-ХХ: Cola ×2, Fanta ×1"  or  "Продажа: Cola ×2"
+    if ": " in desc:
+        return desc.split(": ", 1)[1]
+
+    # Try cache / live API fetch
+    ms_id = tx.moysklad_entity_id
+    if not ms_id:
+        return tx.document_number or ""
+
+    if ms_id in _product_cache:
+        return _product_cache[ms_id]
+
+    try:
+        entity_type = {
+            "sale": "demand",
+        }.get(tx.type, "demand")
+        positions = get_demand_positions(ms_id, entity_type)
+        names = []
+        for pos in positions:
+            assortment = pos.get("assortment", {})
+            p_name = assortment.get("name", "")
+            if not p_name:
+                p_href = assortment.get("meta", {}).get("href", "")
+                if p_href:
+                    prod = get_product(p_href)
+                    if prod:
+                        p_name = prod.get("name", "")
+            qty = float(pos.get("quantity", 0))
+            if p_name:
+                qty_str = f"×{int(qty)}" if qty == int(qty) else f"×{qty}"
+                names.append(f"{p_name} {qty_str}")
+        summary = ", ".join(names) if names else (tx.document_number or "")
+    except Exception:
+        summary = tx.document_number or ""
+
+    _product_cache[ms_id] = summary
+    return summary
 
 
 def _set_col_widths(ws, widths: dict):
@@ -410,15 +464,7 @@ def generate_admin_report(date_from: datetime, date_to: datetime) -> bytes:
             stripe = local_idx % 2 == 0
             fill   = _stripe_fill if stripe else None
 
-            # Description format: "Отгрузка ОТ-ХХХХ: Cola ×2, Fanta ×1"
-            # Show only the products part (after ": ").
-            # Fallback for old records that have no products in description.
-            desc = tx.description or ""
-            if ": " in desc:
-                desc = desc.split(": ", 1)[1]
-            else:
-                # Old format — no product info stored, show document number
-                desc = tx.document_number or desc
+            desc = _get_product_summary(tx)
 
             sub_amount += tx.amount
             sub_earned += tx.bonus_amount
