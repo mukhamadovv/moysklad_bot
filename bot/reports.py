@@ -309,7 +309,7 @@ def generate_admin_report(date_from: datetime, date_to: datetime) -> bytes:
     ws1.sheet_properties.tabColor = "2E5FA3"
 
     # Title
-    SCOLS = 9
+    SCOLS = 10
     ws1.merge_cells(f"A1:{get_column_letter(SCOLS)}1")
     ws1.cell(row=1, column=1, value=f"📊 Отчет по клиентам — {period_label}").font = _title_font
     ws1.row_dimensions[1].height = 34
@@ -324,7 +324,7 @@ def generate_admin_report(date_from: datetime, date_to: datetime) -> bytes:
     s_headers = [
         "№", "Клиент", "Телефон", "Регион",
         "Покупок", "Сумма покупок",
-        "Бонус начислен", "Бонус ожидает", "Текущий долг",
+        "Бонус начислен", "Бонус ожидает", "Текущий долг", "Текущий бонус",
     ]
     for col, h in enumerate(s_headers, 1):
         ws1.cell(row=hr, column=col, value=h)
@@ -369,6 +369,11 @@ def generate_admin_report(date_from: datetime, date_to: datetime) -> bytes:
         _money(ws1, row, 9, debt,
                font=(_neg_font if debt < 0 else (_pos_font if debt > 0 else _data_font)),
                fill=d_fill)
+        bonus_bal = cust.bonus_balance
+        b_fill = _balance_pos_fill if bonus_bal > 0 else fill
+        _money(ws1, row, 10, bonus_bal,
+               font=(_pos_font if bonus_bal > 0 else _data_font),
+               fill=b_fill)
 
     # Grand total
     tr = hr + len(by_customer) + 1
@@ -387,10 +392,12 @@ def generate_admin_report(date_from: datetime, date_to: datetime) -> bytes:
     _money(ws1, tr, 8, grand_pend,   font=_total_font, fill=_total_fill)
     ws1.cell(row=tr, column=9).fill   = _total_fill
     ws1.cell(row=tr, column=9).border = _border
+    ws1.cell(row=tr, column=10).fill   = _total_fill
+    ws1.cell(row=tr, column=10).border = _border
 
     _auto_fit_columns(ws1, {
         "A": 4, "B": 22, "C": 16, "D": 12,
-        "E": 8, "F": 16, "G": 16, "H": 16, "I": 16,
+        "E": 8, "F": 16, "G": 16, "H": 16, "I": 16, "J": 16,
     })
     ws1.freeze_panes = f"A{hr + 1}"
 
