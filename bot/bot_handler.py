@@ -505,18 +505,32 @@ def _show_store_info_admin(customer):
 def _handle_report_period(customer, text):
     chat_id = customer.chat_id
     try:
-        parts = text.replace("–", "-").split("-")
-        date_from = datetime.strptime(parts[0].strip(), "%d.%m.%Y")
-        date_to = datetime.strptime(parts[1].strip(), "%d.%m.%Y")
+        # Accept both "дд.мм.гггг - дд.мм.гггг" (with spaces) and "дд.мм.гггг-дд.мм.гггг"
+        # Use a regex-free approach: find the separator between the two dates
+        clean = text.replace("–", "-").replace("—", "-").strip()
+        # Split on the dash that sits BETWEEN the two dates (not inside them)
+        # Dates contain only digits and dots, so find the '-' not surrounded by digits
+        import re
+        m = re.match(
+            r"(\d{2}\.\d{2}\.\d{4})\s*[-–—]\s*(\d{2}\.\d{2}\.\d{4})", clean
+        )
+        if not m:
+            raise ValueError("no match")
+        date_from = datetime.strptime(m.group(1), "%d.%m.%Y")
+        date_to   = datetime.strptime(m.group(2), "%d.%m.%Y")
     except (ValueError, IndexError):
         send_message(chat_id, "❌ Неверный формат. Используйте: дд.мм.гггг - дд.мм.гггг", reply_markup=back_keyboard())
         return
 
+    # Reset state and acknowledge BEFORE the (potentially slow) report generation.
+    # This prevents Telegram webhook retries from hitting "Используйте кнопки меню."
     customer.state = "none"
     customer.save()
+    period = f"{date_from.strftime('%d.%m.%Y')} - {date_to.strftime('%d.%m.%Y')}"
+    send_message(chat_id, f"⏳ Формирую отчет за {period}...", reply_markup=get_menu_keyboard(customer))
+
     try:
         file_bytes = generate_admin_report(date_from, date_to)
-        period = f"{date_from.strftime('%d.%m.%Y')} - {date_to.strftime('%d.%m.%Y')}"
         send_document(
             chat_id,
             (f"Отчет_{period}.xlsx", file_bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),

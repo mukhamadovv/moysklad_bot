@@ -6,7 +6,6 @@ from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 from openpyxl.utils import get_column_letter
 
 from bot.models import Customer, Transaction
-from bot.moysklad_api import get_demand_positions, get_product
 
 
 # ── Styles ────────────────────────────────────────────────────────────────────
@@ -102,54 +101,38 @@ _product_cache: dict[str, str] = {}
 def _get_product_summary(tx: "Transaction") -> str:
     """Return a product name string for a sale transaction.
 
-    Priority:
-    1. Already encoded in description after ': '  (new records)
-    2. Cached from a previous call for the same moysklad_entity_id
-    3. Live fetch from МойСклад positions API  (old/legacy records)
+    Extracts product names from the stored description — no API calls.
+    Format stored by webhook/sync:
+      "Отгрузка ОТ-ХХ: Cola ×2, Fanta ×1"  →  "Cola ×2, Fanta ×1"
+      "Продажа: Cola ×2, Fanta ×1"           →  "Cola ×2, Fanta ×1"
+    Old records without product info fall back to the document number.
     """
     desc = tx.description or ""
-
-    # New format: "Отгрузка ОТ-ХХ: Cola ×2, Fanta ×1"  or  "Продажа: Cola ×2"
     if ": " in desc:
         return desc.split(": ", 1)[1]
-
-    # Try cache / live API fetch
-    ms_id = tx.moysklad_entity_id
-    if not ms_id:
-        return tx.document_number or ""
-
-    if ms_id in _product_cache:
-        return _product_cache[ms_id]
-
-    try:
-        entity_type = {
-            "sale": "demand",
-        }.get(tx.type, "demand")
-        positions = get_demand_positions(ms_id, entity_type)
-        names = []
-        for pos in positions:
-            assortment = pos.get("assortment", {})
-            p_name = assortment.get("name", "")
-            if not p_name:
-                p_href = assortment.get("meta", {}).get("href", "")
-                if p_href:
-                    prod = get_product(p_href)
-                    if prod:
-                        p_name = prod.get("name", "")
-            qty = float(pos.get("quantity", 0))
-            if p_name:
-                qty_str = f"×{int(qty)}" if qty == int(qty) else f"×{qty}"
-                names.append(f"{p_name} {qty_str}")
-        summary = ", ".join(names) if names else (tx.document_number or "")
-    except Exception:
-        summary = tx.document_number or ""
-
-    _product_cache[ms_id] = summary
-    return summary
+    # Old record — no product info yet; show document number as fallback
+    return tx.document_number or ""
 
 
 def _set_col_widths(ws, widths: dict):
     for col_letter, width in widths.items():
+        ws.column_dimensions[col_letter].width = width
+
+
+def _auto_fit_columns(ws, min_widths: dict, max_width: int = 80):
+    """Set column widths based on actual cell content, respecting min widths."""
+    from openpyxl.utils import get_column_letter as gcl
+    col_widths: dict[str, float] = dict(min_widths)
+    for row in ws.iter_rows():
+        for cell in row:
+            if cell.value is None:
+                continue
+            col_letter = gcl(cell.column)
+            # Approximate character width
+            content_len = len(str(cell.value))
+            current = col_widths.get(col_letter, 8)
+            col_widths[col_letter] = min(max(current, content_len + 2), max_width)
+    for col_letter, width in col_widths.items():
         ws.column_dimensions[col_letter].width = width
 
 
@@ -393,9 +376,9 @@ def generate_admin_report(date_from: datetime, date_to: datetime) -> bytes:
     ws1.cell(row=tr, column=9).fill   = _total_fill
     ws1.cell(row=tr, column=9).border = _border
 
-    _set_col_widths(ws1, {
-        "A": 5, "B": 28, "C": 17, "D": 14,
-        "E": 10, "F": 18, "G": 18, "H": 18, "I": 18,
+    _auto_fit_columns(ws1, {
+        "A": 5, "B": 22, "C": 16, "D": 12,
+        "E": 10, "F": 16, "G": 16, "H": 16, "I": 16,
     })
     ws1.freeze_panes = f"A{hr + 1}"
 
@@ -536,9 +519,9 @@ def generate_admin_report(date_from: datetime, date_to: datetime) -> bytes:
         ws2.cell(row=current_row, column=8).border = _border
         ws2.row_dimensions[current_row].height = 24
 
-    _set_col_widths(ws2, {
-        "A": 5, "B": 13, "C": 17, "D": 48,
-        "E": 18, "F": 18, "G": 18, "H": 18,
+    _auto_fit_columns(ws2, {
+        "A": 5, "B": 12, "C": 14, "D": 30,
+        "E": 16, "F": 16, "G": 16, "H": 16,
     })
 
     buf = io.BytesIO()
