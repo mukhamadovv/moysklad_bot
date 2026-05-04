@@ -377,8 +377,8 @@ def generate_admin_report(date_from: datetime, date_to: datetime) -> bytes:
     ws1.cell(row=tr, column=9).border = _border
 
     _auto_fit_columns(ws1, {
-        "A": 5, "B": 22, "C": 16, "D": 12,
-        "E": 10, "F": 16, "G": 16, "H": 16, "I": 16,
+        "A": 4, "B": 22, "C": 16, "D": 12,
+        "E": 8, "F": 16, "G": 16, "H": 16, "I": 16,
     })
     ws1.freeze_panes = f"A{hr + 1}"
 
@@ -520,7 +520,7 @@ def generate_admin_report(date_from: datetime, date_to: datetime) -> bytes:
         ws2.row_dimensions[current_row].height = 24
 
     _auto_fit_columns(ws2, {
-        "A": 5, "B": 12, "C": 14, "D": 30,
+        "A": 4, "B": 12, "C": 14, "D": 30,
         "E": 16, "F": 16, "G": 16, "H": 16,
     })
 
