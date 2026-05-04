@@ -120,15 +120,27 @@ def _set_col_widths(ws, widths: dict):
 
 
 def _auto_fit_columns(ws, min_widths: dict, max_width: int = 80):
-    """Set column widths based on actual cell content, respecting min widths."""
+    """Set column widths based on actual cell content, respecting min widths.
+    Skips cells that span multiple columns (merged) to avoid inflating narrow columns."""
     from openpyxl.utils import get_column_letter as gcl
+
+    # Build a set of (row, col) that are the top-left of a multi-column merge
+    merged_multicol = set()
+    for merge in ws.merged_cells.ranges:
+        if merge.max_col > merge.min_col:
+            # All cells in this merge should be ignored for width calculation
+            for r in range(merge.min_row, merge.max_row + 1):
+                for c in range(merge.min_col, merge.max_col + 1):
+                    merged_multicol.add((r, c))
+
     col_widths: dict[str, float] = dict(min_widths)
     for row in ws.iter_rows():
         for cell in row:
             if cell.value is None:
                 continue
+            if (cell.row, cell.column) in merged_multicol:
+                continue
             col_letter = gcl(cell.column)
-            # Approximate character width
             content_len = len(str(cell.value))
             current = col_widths.get(col_letter, 8)
             col_widths[col_letter] = min(max(current, content_len + 2), max_width)
